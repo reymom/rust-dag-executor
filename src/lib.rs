@@ -2,6 +2,7 @@
 
 pub mod builder;
 pub mod error;
+pub mod exec;
 pub mod graph;
 
 pub use builder::DagBuilder;
