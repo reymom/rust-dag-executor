@@ -1,5 +1,6 @@
-use dag_exec::{DagBuilder, ExecError};
 use std::sync::Arc;
+
+use dag_exec::{DagBuilder, ExecError, Executor, ExecutorConfig};
 
 #[test]
 fn computes_only_requested_outputs() {
@@ -24,8 +25,9 @@ fn computes_only_requested_outputs() {
     .unwrap();
 
     let dag = b.build().unwrap();
+    let exec = Executor::new(ExecutorConfig::default());
 
-    let out = dag.run_sequential(vec!["d".into()]).unwrap();
+    let out = exec.run_sequential(&dag, vec!["d".into()]).unwrap();
     assert_eq!(*out["d"], 5);
 }
 
@@ -39,7 +41,9 @@ fn detects_cycle_in_needed_subgraph() {
         .unwrap();
 
     let dag = b.build().unwrap();
-    let err = dag.run_sequential(vec!["a".into()]).unwrap_err();
+    let exec = Executor::new(ExecutorConfig::default());
+
+    let err = exec.run_sequential(&dag, vec!["a".into()]).unwrap_err();
 
     match err {
         ExecError::Cycle { remaining } => assert!(!remaining.is_empty()),
