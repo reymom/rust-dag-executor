@@ -105,3 +105,12 @@ where
         })
     }
 }
+
+impl<K, O, E> Default for DagBuilder<K, O, E>
+where
+    K: Eq + std::hash::Hash + Clone,
+{
+    fn default() -> Self {
+        Self::new()
+    }
+}
