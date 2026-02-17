@@ -21,11 +21,11 @@ impl Default for ExecutorConfig {
     }
 }
 
-pub type TaskFn<O, E> = dyn Fn(&[Arc<O>]) -> Result<O, E> + Send + Sync + 'static;
+pub(crate) type TaskFn<O, E> = dyn Fn(&[Arc<O>]) -> Result<O, E> + Send + Sync + 'static;
 
 pub(crate) enum NodeKind<O, E> {
     Source(Arc<O>),
-    Task(Box<TaskFn<O, E>>),
+    Task(Arc<TaskFn<O, E>>),
 }
 
 pub(crate) struct Node<K, O, E> {

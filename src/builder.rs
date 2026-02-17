@@ -21,7 +21,7 @@ struct StagedNode<K, O, E> {
 
 enum StagedKind<O, E> {
     Source(Arc<O>),
-    Task(Box<TaskFn<O, E>>),
+    Task(Arc<TaskFn<O, E>>),
 }
 
 impl<K, O, E> DagBuilder<K, O, E>
@@ -43,7 +43,7 @@ where
     where
         F: Fn(&[Arc<O>]) -> Result<O, E> + Send + Sync + 'static,
     {
-        self.insert_node(key, deps, StagedKind::Task(Box::new(f)))
+        self.insert_node(key, deps, StagedKind::Task(Arc::new(f)))
     }
 
     fn insert_node(
