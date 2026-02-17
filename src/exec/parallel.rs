@@ -114,6 +114,10 @@ where
     let (res_tx, res_rx) = mpsc::channel::<TaskResult<O, E>>();
     let pool = WorkerPool::spawn(res_tx, cfg.max_workers);
 
+    let senders = pool
+        .senders()
+        .ok_or_else(|| ExecError::InternalInvariant("worker pool is closed"))?;
+
     let mut processed = 0usize;
     let mut in_flight = 0usize;
     let mut next_worker = 0usize;
@@ -125,15 +129,7 @@ where
                 NodeKind::Source(v) => {
                     vals[id.0] = Some(Arc::clone(v));
                     processed += 1;
-
-                    // Release dependents
-                    for &dst in dependents[id.0].iter() {
-                        debug_assert!(indeg[dst.0] > 0);
-                        indeg[dst.0] -= 1;
-                        if indeg[dst.0] == 0 {
-                            ready.push_back(dst);
-                        }
-                    }
+                    release_dependents(&dependents, &mut indeg, &mut ready, id);
                 }
                 NodeKind::Task(f) => {
                     let deps = &dag.nodes[id.0].deps;
@@ -144,10 +140,6 @@ where
                         })?;
                         args.push(Arc::clone(v));
                     }
-
-                    let senders = pool
-                        .senders()
-                        .ok_or_else(|| ExecError::InternalInvariant("worker pool is closed"))?;
 
                     dispatch_task(
                         senders,
@@ -186,7 +178,6 @@ where
 
         // Record and propagate
         let id = task_res.id;
-
         let out = task_res.out.map_err(|e| ExecError::TaskFailed {
             task: dag.nodes[id.0].key.clone(),
             error: e,
@@ -196,14 +187,7 @@ where
         vals[id.0] = Some(Arc::new(out));
         processed += 1;
 
-        // Release dependents (same as Source case)
-        for &dst in dependents[id.0].iter() {
-            debug_assert!(indeg[dst.0] > 0);
-            indeg[dst.0] -= 1;
-            if indeg[dst.0] == 0 {
-                ready.push_back(dst);
-            }
-        }
+        release_dependents(&dependents, &mut indeg, &mut ready, id);
     }
 
     // Return only requested outputs
@@ -219,6 +203,21 @@ where
         out.insert(k, Arc::clone(v));
     }
     Ok(out)
+}
+
+fn release_dependents(
+    dependents: &[Vec<NodeId>],
+    indeg: &mut [usize],
+    ready: &mut VecDeque<NodeId>,
+    from: NodeId,
+) {
+    for &dst in dependents[from.0].iter() {
+        debug_assert!(indeg[dst.0] > 0);
+        indeg[dst.0] -= 1;
+        if indeg[dst.0] == 0 {
+            ready.push_back(dst);
+        }
+    }
 }
 
 /// Dispatch a task to the next worker (round-robin).
