@@ -1,9 +1,9 @@
 use std::sync::{
     Arc,
-    atomic::{AtomicUsize, Ordering},
+    atomic::{AtomicBool, AtomicUsize, Ordering},
 };
 
-use dag_exec::{ExecError, Executor, ExecutorConfig};
+use dag_exec::{DagBuilder, ExecError, Executor, ExecutorConfig};
 
 mod common;
 
@@ -67,4 +67,84 @@ fn parallel_propagates_task_failure() {
         ExecError::TaskFailed { task, .. } => assert_eq!(task, "c"),
         _ => panic!("unexpected err: {err:?}"),
     }
+}
+
+#[test]
+fn parallel_respects_max_in_flight() {
+    let n_tasks = 32;
+
+    // Track concurrent running tasks
+    let active = Arc::new(AtomicUsize::new(0));
+    let max_active = Arc::new(AtomicUsize::new(0));
+
+    // Gate tasks to force overlap without sleep
+    let started = Arc::new(AtomicUsize::new(0));
+    let release = Arc::new(AtomicBool::new(false));
+
+    let mut b = DagBuilder::<String, usize, ()>::new();
+    b.add_source("src".into(), 1usize).unwrap();
+
+    for i in 0..n_tasks {
+        let active = Arc::clone(&active);
+        let max_active = Arc::clone(&max_active);
+        let started = Arc::clone(&started);
+        let release = Arc::clone(&release);
+
+        b.add_task(format!("t{i}"), vec!["src".into()], move |_xs| {
+            let cur = active.fetch_add(1, Ordering::SeqCst) + 1;
+
+            // update max_active = max(max_active, cur)
+            loop {
+                let prev = max_active.load(Ordering::SeqCst);
+                if cur <= prev {
+                    break;
+                }
+                if max_active
+                    .compare_exchange(prev, cur, Ordering::SeqCst, Ordering::SeqCst)
+                    .is_ok()
+                {
+                    break;
+                }
+            }
+
+            started.fetch_add(1, Ordering::SeqCst);
+
+            while !release.load(Ordering::SeqCst) {
+                std::hint::spin_loop();
+            }
+
+            active.fetch_sub(1, Ordering::SeqCst);
+            Ok(1usize)
+        })
+        .unwrap();
+    }
+
+    let dag = b.build().unwrap();
+
+    let mut cfg = ExecutorConfig::default();
+    cfg.max_workers = 8;
+    cfg.worker_queue_cap = 1;
+    cfg.max_in_flight = 2;
+
+    let exec = Executor::new(cfg.clone());
+
+    // Run executor in a separate thread so we can release the gate
+    let release2 = Arc::clone(&release);
+    let started2 = Arc::clone(&started);
+
+    let h = std::thread::spawn(move || {
+        let outs = (0..n_tasks).map(|i| format!("t{i}")).collect::<Vec<_>>();
+        exec.run_parallel(&dag, outs)
+    });
+
+    while started2.load(Ordering::SeqCst) == 0 {
+        std::hint::spin_loop();
+    }
+
+    release2.store(true, Ordering::SeqCst);
+
+    let out = h.join().unwrap().unwrap();
+    assert_eq!(out.len(), n_tasks);
+
+    assert!(max_active.load(Ordering::SeqCst) <= cfg.max_in_flight);
 }
