@@ -5,8 +5,8 @@ use std::{
     thread,
 };
 
+use super::common::{build_kahn_metadata, mark_needed};
 use crate::error::ExecError;
-use crate::exec::common::{build_kahn_metadata, mark_needed};
 use crate::graph::{Dag, ExecutorConfig, NodeId, NodeKind, TaskFn};
 
 struct Task<O, E> {
@@ -21,8 +21,13 @@ struct TaskResult<O, E> {
 }
 
 struct WorkerPool<O, E> {
-    task_txs: Option<Vec<mpsc::Sender<Task<O, E>>>>,
+    task_txs: Option<Vec<mpsc::SyncSender<Task<O, E>>>>,
     workers: Vec<thread::JoinHandle<()>>,
+}
+
+enum DispatchOutcome<O, E> {
+    Queued,
+    AllFull(Task<O, E>),
 }
 
 impl<O, E> WorkerPool<O, E>
@@ -32,12 +37,16 @@ where
 {
     /// Spawn N workers with N independent task queues (each queue is mpsc: scheduler -> worker).
     /// Returns (task_senders, join_handles).
-    fn spawn(res_tx: mpsc::Sender<TaskResult<O, E>>, n_workers: usize) -> Self {
+    fn spawn(
+        res_tx: mpsc::Sender<TaskResult<O, E>>,
+        n_workers: usize,
+        per_worker_cap: usize,
+    ) -> Self {
         let mut task_txs = Vec::with_capacity(n_workers);
         let mut workers = Vec::with_capacity(n_workers);
 
         for _ in 0..n_workers {
-            let (task_tx, task_rx) = mpsc::channel::<Task<O, E>>();
+            let (task_tx, task_rx) = mpsc::sync_channel::<Task<O, E>>(per_worker_cap);
             task_txs.push(task_tx);
 
             let res_tx = res_tx.clone();
@@ -62,7 +71,7 @@ where
         }
     }
 
-    fn senders(&self) -> Option<&[mpsc::Sender<Task<O, E>>]> {
+    fn senders(&self) -> Option<&[mpsc::SyncSender<Task<O, E>>]> {
         self.task_txs.as_deref()
     }
 }
@@ -75,6 +84,48 @@ impl<O, E> Drop for WorkerPool<O, E> {
         // Join to avoid detaching threads on drop.
         for h in self.workers.drain(..) {
             let _ = h.join();
+        }
+    }
+}
+
+/// Dispatch a task to the next worker (round-robin).
+fn dispatch_task_try<O, E>(
+    task_txs: &[mpsc::SyncSender<Task<O, E>>],
+    next_worker: &mut usize,
+    mut task: Task<O, E>,
+) -> Result<DispatchOutcome<O, E>, ()> {
+    let n = task_txs.len();
+    debug_assert!(n > 0);
+
+    for _ in 0..n {
+        let idx = *next_worker % n;
+        *next_worker = idx + 1;
+
+        match task_txs[idx].try_send(task) {
+            Ok(()) => return Ok(DispatchOutcome::Queued),
+            Err(mpsc::TrySendError::Full(t)) => {
+                // keep ownership and try next worker
+                task = t;
+            }
+            Err(_e) => return Err(()), // Disconnected
+        }
+    }
+
+    // All queues full: signal caller to stop dispatching and recv a result.
+    Ok(DispatchOutcome::AllFull(task))
+}
+
+fn release_dependents(
+    dependents: &[Vec<NodeId>],
+    indeg: &mut [usize],
+    ready: &mut VecDeque<NodeId>,
+    from: NodeId,
+) {
+    for &dst in dependents[from.0].iter() {
+        debug_assert!(indeg[dst.0] > 0);
+        indeg[dst.0] -= 1;
+        if indeg[dst.0] == 0 {
+            ready.push_back(dst);
         }
     }
 }
@@ -95,6 +146,12 @@ where
     if cfg.max_workers == 0 {
         return Err(ExecError::InternalInvariant("max_workers must be > 0"));
     }
+    if cfg.max_in_flight == 0 {
+        return Err(ExecError::InternalInvariant("max_in_flight must be > 0"));
+    }
+    if cfg.worker_queue_cap == 0 {
+        return Err(ExecError::InternalInvariant("worker_queue_cap must be > 0"));
+    }
 
     let needed = mark_needed(dag, &out_keys)?;
     let (dependents, mut indeg, needed_count) = build_kahn_metadata(dag, &needed);
@@ -112,19 +169,46 @@ where
 
     // Worker pool wiring
     let (res_tx, res_rx) = mpsc::channel::<TaskResult<O, E>>();
-    let pool = WorkerPool::spawn(res_tx, cfg.max_workers);
+    let pool = WorkerPool::spawn(res_tx, cfg.max_workers, cfg.worker_queue_cap);
 
     let senders = pool
         .senders()
         .ok_or_else(|| ExecError::InternalInvariant("worker pool is closed"))?;
+    let n_workers = senders.len();
+
+    let physical_max = n_workers.saturating_mul(cfg.worker_queue_cap.saturating_add(1));
+    let effective_cap = cfg.max_in_flight.min(physical_max);
 
     let mut processed = 0usize;
     let mut in_flight = 0usize;
     let mut next_worker = 0usize;
 
+    // If we hit AllFull, we keep the exact task here and retry after receiving a result.
+    let mut pending: Option<Task<O, E>> = None;
+
     while processed < needed_count {
         // Dispatch all currently-ready nodes.
-        while let Some(id) = ready.pop_front() {
+        while in_flight < effective_cap {
+            // Retry pending first (keeps fairness / avoids rebuilding args).
+            if let Some(task) = pending.take() {
+                match dispatch_task_try(senders, &mut next_worker, task)
+                    .map_err(|_| ExecError::InternalInvariant("worker task channel disconnected"))?
+                {
+                    DispatchOutcome::Queued => {
+                        in_flight += 1;
+                        continue;
+                    }
+                    DispatchOutcome::AllFull(task) => {
+                        pending = Some(task);
+                        break;
+                    }
+                }
+            }
+
+            let Some(id) = ready.pop_front() else {
+                break;
+            };
+
             match &dag.nodes[id.0].kind {
                 NodeKind::Source(v) => {
                     vals[id.0] = Some(Arc::clone(v));
@@ -141,19 +225,23 @@ where
                         args.push(Arc::clone(v));
                     }
 
-                    dispatch_task(
-                        senders,
-                        &mut next_worker,
-                        Task {
-                            id,
-                            func: Arc::clone(f),
-                            args,
-                        },
-                    )
-                    .map_err(|_| {
+                    let task = Task {
+                        id,
+                        func: Arc::clone(f),
+                        args,
+                    };
+
+                    match dispatch_task_try(senders, &mut next_worker, task).map_err(|_| {
                         ExecError::InternalInvariant("worker task channel disconnected")
-                    })?;
-                    in_flight += 1;
+                    })? {
+                        DispatchOutcome::Queued => {
+                            in_flight += 1;
+                        }
+                        DispatchOutcome::AllFull(task) => {
+                            pending = Some(task);
+                            break;
+                        }
+                    }
                 }
             }
         }
@@ -203,30 +291,4 @@ where
         out.insert(k, Arc::clone(v));
     }
     Ok(out)
-}
-
-fn release_dependents(
-    dependents: &[Vec<NodeId>],
-    indeg: &mut [usize],
-    ready: &mut VecDeque<NodeId>,
-    from: NodeId,
-) {
-    for &dst in dependents[from.0].iter() {
-        debug_assert!(indeg[dst.0] > 0);
-        indeg[dst.0] -= 1;
-        if indeg[dst.0] == 0 {
-            ready.push_back(dst);
-        }
-    }
-}
-
-/// Dispatch a task to the next worker (round-robin).
-fn dispatch_task<O, E>(
-    task_txs: &[mpsc::Sender<Task<O, E>>],
-    next_worker: &mut usize,
-    task: Task<O, E>,
-) -> Result<(), mpsc::SendError<Task<O, E>>> {
-    let idx = *next_worker % task_txs.len();
-    *next_worker = idx + 1;
-    task_txs[idx].send(task)
 }

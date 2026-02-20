@@ -7,6 +7,8 @@ pub struct NodeId(pub usize);
 pub struct ExecutorConfig {
     pub max_workers: usize,
     pub max_in_flight: usize,
+    /// Per-worker buffered tasks (not counting the running task).
+    pub worker_queue_cap: usize,
 }
 
 impl Default for ExecutorConfig {
@@ -17,6 +19,7 @@ impl Default for ExecutorConfig {
         Self {
             max_workers,
             max_in_flight: max_workers * 2,
+            worker_queue_cap: 2,
         }
     }
 }
