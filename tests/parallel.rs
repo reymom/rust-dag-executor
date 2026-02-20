@@ -121,10 +121,11 @@ fn parallel_respects_max_in_flight() {
 
     let dag = b.build().unwrap();
 
-    let mut cfg = ExecutorConfig::default();
-    cfg.max_workers = 8;
-    cfg.worker_queue_cap = 1;
-    cfg.max_in_flight = 2;
+    let cfg = ExecutorConfig {
+        max_workers: 8,
+        worker_queue_cap: 1,
+        max_in_flight: 2,
+    };
 
     let exec = Executor::new(cfg.clone());
 
