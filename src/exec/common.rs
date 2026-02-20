@@ -1,4 +1,4 @@
-use std::hash::Hash;
+use std::{collections::HashMap, hash::Hash, sync::Arc};
 
 use crate::error::ExecError;
 use crate::graph::{Dag, NodeId};
@@ -55,4 +55,26 @@ pub(super) fn build_kahn_metadata<K, O, E>(
     }
 
     (dependents, indeg, needed_count)
+}
+
+pub(super) fn collect_outputs<K, O, E>(
+    dag: &Dag<K, O, E>,
+    out_keys: Vec<K>,
+    vals: Vec<Option<Arc<O>>>,
+) -> Result<HashMap<K, Arc<O>>, ExecError<K, E>>
+where
+    K: Eq + Hash + Clone,
+{
+    let mut out = HashMap::with_capacity(out_keys.len());
+    for k in out_keys {
+        let id = *dag
+            .index
+            .get(&k)
+            .ok_or_else(|| ExecError::OutputMissing(k.clone()))?;
+        let v = vals[id.0]
+            .as_ref()
+            .ok_or_else(|| ExecError::OutputMissing(k.clone()))?;
+        out.insert(k, Arc::clone(v));
+    }
+    Ok(out)
 }

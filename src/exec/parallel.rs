@@ -5,7 +5,7 @@ use std::{
     thread,
 };
 
-use super::common::{build_kahn_metadata, mark_needed};
+use super::common::{build_kahn_metadata, collect_outputs, mark_needed};
 use crate::error::ExecError;
 use crate::graph::{Dag, ExecutorConfig, NodeId, NodeKind, TaskFn};
 
@@ -278,17 +278,5 @@ where
         release_dependents(&dependents, &mut indeg, &mut ready, id);
     }
 
-    // Return only requested outputs
-    let mut out = HashMap::with_capacity(out_keys.len());
-    for k in out_keys {
-        let id = *dag
-            .index
-            .get(&k)
-            .ok_or_else(|| ExecError::OutputMissing(k.clone()))?;
-        let v = vals[id.0]
-            .as_ref()
-            .ok_or_else(|| ExecError::OutputMissing(k.clone()))?;
-        out.insert(k, Arc::clone(v));
-    }
-    Ok(out)
+    collect_outputs(dag, out_keys, vals)
 }

@@ -2,9 +2,7 @@ mod common;
 mod parallel;
 mod sequential;
 
-use std::collections::HashMap;
-use std::hash::Hash;
-use std::sync::Arc;
+use std::{collections::HashMap, hash::Hash, sync::Arc};
 
 use crate::error::ExecError;
 use crate::graph::{Dag, ExecutorConfig};

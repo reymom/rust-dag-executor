@@ -1,6 +1,4 @@
-use std::collections::HashMap;
-use std::hash::Hash;
-use std::sync::Arc;
+use std::{collections::HashMap, hash::Hash, sync::Arc};
 
 use crate::error::BuildError;
 use crate::graph::{Dag, Node, NodeId, NodeKind, TaskFn};
