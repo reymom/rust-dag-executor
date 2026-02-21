@@ -23,6 +23,28 @@ fn parallel_correctness() {
 }
 
 #[test]
+fn parallel_matches_sequential_on_simple_dag() {
+    let counter_d = Arc::new(AtomicUsize::new(0));
+    let dag = common::build_add_chain_dag(Arc::clone(&counter_d));
+
+    let exec_seq = Executor::new(ExecutorConfig::default());
+
+    let mut cfg = ExecutorConfig::default();
+    cfg.max_workers = cfg.max_workers.max(2);
+    let exec_par = Executor::new(cfg);
+
+    let out_seq = exec_seq
+        .run_sequential(&dag, vec!["d".into(), "c".into()])
+        .unwrap();
+    let out_par = exec_par
+        .run_parallel(&dag, vec!["d".into(), "c".into()])
+        .unwrap();
+
+    assert_eq!(*out_seq["c"], *out_par["c"]);
+    assert_eq!(*out_seq["d"], *out_par["d"]);
+}
+
+#[test]
 fn parallel_prunes_unused_subgraph() {
     let counter_d = Arc::new(AtomicUsize::new(0));
     let dag = common::build_add_chain_dag(Arc::clone(&counter_d));
@@ -148,4 +170,20 @@ fn parallel_respects_max_in_flight() {
     assert_eq!(out.len(), n_tasks);
 
     assert!(max_active.load(Ordering::SeqCst) <= cfg.max_in_flight);
+}
+
+#[test]
+fn parallel_no_hang_on_task_failure_repeat() {
+    let dag = common::build_failing_dag();
+    let mut cfg = ExecutorConfig::default();
+    cfg.max_workers = cfg.max_workers.max(2);
+    let exec = Executor::new(cfg);
+
+    for _ in 0..100 {
+        let err = exec.run_parallel(&dag, vec!["c".into()]).unwrap_err();
+        match err {
+            ExecError::TaskFailed { task, .. } => assert_eq!(task, "c"),
+            _ => panic!("unexpected err: {err:?}"),
+        }
+    }
 }
