@@ -1,6 +1,6 @@
 # dag_exec
 
-Sync DAG executor for CPU-heavy pipelines: **bounded parallelism** + **partial evaluation**.
+Sync DAG executor for CPU-heavy pipelines: **bounded parallelism** + **partial evaluation** (std-only).
 
 ## Why
 
@@ -17,12 +17,14 @@ you often want:
 
 - **Partial evaluation**: computes only requested outputs (prunes unused subgraph)
 - **Sequential executor**: Kahn-style topo scheduling + cycle detection
-- **Parallel executor (std threads)**: work dispatch to a worker pool (RAII shutdown)
-- Validation: missing deps, duplicate keys, empty graph
+- **Parallel executor (std threads)**:
+  - worker pool with RAII shutdown
+  - bounded dispatch via `max_in_flight` + per-worker bounded queues (`worker_queue_cap`)
+- Build-time validation: missing deps, duplicate keys, empty graph
 
 ## Status
 
-Early WIP. API may change before `publish = true`.
+Pre-1.0. API may change before `publish = true`.
 
 ## Minimal example
 
@@ -42,9 +44,13 @@ assert_eq!(*out["c"], 3);
 # Ok::<(), dag_exec::BuildError<String>>(())
 ```
 
+## Design notes
+
+- `max_in_flight` bounds **queued + running** work in the parallel scheduler.
+- Physical maximum is `n_workers * (worker_queue_cap + 1)`; effective cap is the minimum of both.
+
 ## Roadmap
 
-- Enforce **max_in_flight** via `sync_channel` + `try_send`
-- Add tests for parallel correctness + backpressure invariants
-- Add example(s): Merkle-style DAG, pipeline DAG
-- Add benches (criterion) once API stabilizes
+- Examples: Merkle-style DAG, pipeline DAG
+- Benches: Criterion suite (sequential vs parallel; prune vs full)
+- Ergonomics: richer examples + README diagrams
