@@ -9,3 +9,10 @@ readme = "README.md"
 publish = false
 
 [dependencies]
+
+[dev-dependencies]
+criterion = "0.8.2"
+
+[[bench]]
+name = "exec"
+harness = false
