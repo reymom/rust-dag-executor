@@ -44,6 +44,23 @@ assert_eq!(*out["c"], 3);
 # Ok::<(), dag_exec::BuildError<String>>(())
 ```
 
+## Examples
+
+```bash
+cargo run --example pipeline
+```
+
+## Benchmarks
+
+```bash
+cargo bench
+```
+
+Notes:
+
+- `chain_*` has no inherent parallelism (measures overhead).
+- `fanout_*_heavy` demonstrates parallel speedups for CPU-heavy nodes.
+
 ## Design notes
 
 - `max_in_flight` bounds **queued + running** work in the parallel scheduler.
