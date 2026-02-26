@@ -24,7 +24,7 @@ you often want:
 
 ## Status
 
-Pre-1.0. API may change before `publish = true`.
+Published as v0.1.0. API may change while pre-1.0.
 
 ## Minimal example
 
@@ -84,8 +84,7 @@ Tip: for benchmarks/demos, set `DAG_EXEC_MAX_WORKERS=4` to avoid oversubscribing
 - Use `DAG_EXEC_HASH_ITERS` in `rollup`/`pipeline` examples to simulate CPU-heavy nodes and see speedups.
 - The pruning win (partial evaluation) is deterministic: fewer requested outputs => fewer executed nodes.
 
-## Roadmap
+## Next
 
-- Examples: Merkle-style DAG, pipeline DAG
-- Benches: Criterion suite (sequential vs parallel; prune vs full)
-- Ergonomics: richer examples + README diagrams
+- Error hardening + invariant tightening (see issue #6)
+- More docs/diagrams and additional DAG examples (as needed)
