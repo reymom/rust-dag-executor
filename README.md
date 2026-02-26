@@ -48,6 +48,9 @@ assert_eq!(*out["c"], 3);
 
 ```bash
 cargo run --example pipeline
+cargo run --example merkle
+cargo run --release --example rollup
+DAG_EXEC_MAX_WORKERS=4 DAG_EXEC_HASH_ITERS=200000 cargo run --release --example rollup
 ```
 
 ## Benchmarks
