@@ -69,6 +69,21 @@ Notes:
 - `max_in_flight` bounds **queued + running** work in the parallel scheduler.
 - Physical maximum is `n_workers * (worker_queue_cap + 1)`; effective cap is the minimum of both.
 
+### ExecutorConfig knobs
+
+- `max_workers`: worker threads in the parallel executor (default: available CPU threads).
+- `max_in_flight`: global bound on queued + running tasks (backpressure).
+- `worker_queue_cap`: per-worker queue capacity (bounded `sync_channel`); physical max in-flight is
+  `max_workers * (worker_queue_cap + 1)` and the effective cap is `min(max_in_flight, physical_max)`.
+
+Tip: for benchmarks/demos, set `DAG_EXEC_MAX_WORKERS=4` to avoid oversubscribing small DAGs.
+
+### Notes on performance
+
+- For tiny per-node work, the parallel executor can be slower (thread + channel overhead dominates).
+- Use `DAG_EXEC_HASH_ITERS` in `rollup`/`pipeline` examples to simulate CPU-heavy nodes and see speedups.
+- The pruning win (partial evaluation) is deterministic: fewer requested outputs => fewer executed nodes.
+
 ## Roadmap
 
 - Examples: Merkle-style DAG, pipeline DAG

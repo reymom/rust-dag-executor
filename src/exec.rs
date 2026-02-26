@@ -7,6 +7,7 @@ use std::{collections::HashMap, hash::Hash, sync::Arc};
 use crate::error::ExecError;
 use crate::graph::{Dag, ExecutorConfig};
 
+/// Executes a compiled `Dag` either sequentially or with a bounded std-thread worker pool.
 pub struct Executor {
     cfg: ExecutorConfig,
 }

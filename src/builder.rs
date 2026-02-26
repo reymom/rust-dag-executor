@@ -3,6 +3,9 @@ use std::{collections::HashMap, hash::Hash, sync::Arc};
 use crate::error::BuildError;
 use crate::graph::{Dag, Node, NodeId, NodeKind, TaskFn};
 
+/// Builder for constructing a DAG keyed by `K`.
+///
+/// Add sources and tasks, then call `build()` to get a `Dag`.
 pub struct DagBuilder<K, O, E>
 where
     K: Eq + Hash + Clone,

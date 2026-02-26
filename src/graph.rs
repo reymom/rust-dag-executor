@@ -1,8 +1,10 @@
 use std::{collections::HashMap, sync::Arc};
 
+/// Dense node identifier used internally in the compiled DAG.
 #[derive(Debug, Copy, Clone, PartialEq, Eq, Hash)]
 pub struct NodeId(pub usize);
 
+/// Executor configuration for the parallel scheduler.
 #[derive(Debug, Clone)]
 pub struct ExecutorConfig {
     pub max_workers: usize,
@@ -37,6 +39,7 @@ pub(crate) struct Node<K, O, E> {
     pub kind: NodeKind<O, E>,
 }
 
+/// A compiled DAG: nodes indexed densely and accessible by key.
 pub struct Dag<K, O, E> {
     pub(crate) nodes: Vec<Node<K, O, E>>,
     pub(crate) index: HashMap<K, NodeId>,
