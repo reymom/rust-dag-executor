@@ -25,6 +25,7 @@ pub fn build_add_chain_dag(counter_d: Arc<AtomicUsize>) -> Dag<String, i32, &'st
     b.build().unwrap()
 }
 
+#[allow(dead_code)]
 pub fn build_cycle_dag() -> Dag<String, i32, &'static str> {
     let mut b = DagBuilder::<String, i32, &'static str>::new();
     b.add_task("a".into(), vec!["b".into()], |_xs| Ok(1))
@@ -34,6 +35,7 @@ pub fn build_cycle_dag() -> Dag<String, i32, &'static str> {
     b.build().unwrap()
 }
 
+#[allow(dead_code)]
 pub fn build_failing_dag() -> Dag<String, i32, &'static str> {
     let mut b = DagBuilder::<String, i32, &'static str>::new();
     b.add_source("a".into(), 1).unwrap();
