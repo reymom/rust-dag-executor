@@ -1,7 +1,13 @@
 use std::{collections::HashMap, hash::Hash, sync::Arc};
 
-use crate::error::ExecError;
-use crate::graph::{Dag, NodeId};
+use crate::{
+    error::ExecError,
+    graph::{Dag, NodeId},
+};
+
+pub(super) type NodeValues<O> = Vec<Option<Arc<O>>>;
+pub(super) type NeededMask = Vec<bool>;
+pub(super) type ExecArtifacts<O> = (NodeValues<O>, NeededMask);
 
 pub(super) fn mark_needed<K, O, E>(
     dag: &Dag<K, O, E>,
@@ -59,7 +65,7 @@ pub(super) fn build_kahn_metadata<K, O, E>(
 
 pub(super) fn collect_outputs<K, O, E>(
     dag: &Dag<K, O, E>,
-    out_keys: Vec<K>,
+    out_keys: &[K],
     vals: Vec<Option<Arc<O>>>,
 ) -> Result<HashMap<K, Arc<O>>, ExecError<K, E>>
 where
@@ -69,12 +75,12 @@ where
     for k in out_keys {
         let id = *dag
             .index
-            .get(&k)
+            .get(k)
             .ok_or_else(|| ExecError::OutputMissing(k.clone()))?;
         let v = vals[id.0]
             .as_ref()
             .ok_or_else(|| ExecError::OutputMissing(k.clone()))?;
-        out.insert(k, Arc::clone(v));
+        out.insert(k.clone(), Arc::clone(v));
     }
     Ok(out)
 }

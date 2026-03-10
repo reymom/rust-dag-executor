@@ -5,9 +5,17 @@ use std::{
     thread,
 };
 
-use super::common::{build_kahn_metadata, collect_outputs, mark_needed};
-use crate::error::ExecError;
-use crate::graph::{Dag, ExecutorConfig, NodeId, NodeKind, TaskFn};
+use super::{
+    common::{ExecArtifacts, build_kahn_metadata, collect_outputs, mark_needed},
+    observe::{ExecObserver, NoopObserver},
+};
+use crate::{
+    error::ExecError,
+    graph::{Dag, ExecutorConfig, NodeId, NodeKind, TaskFn},
+};
+
+#[cfg(feature = "execution-trace")]
+use crate::trace::{TraceObserver, TracedExecution};
 
 struct Task<O, E> {
     id: NodeId,
@@ -26,7 +34,7 @@ struct WorkerPool<O, E> {
 }
 
 enum DispatchOutcome<O, E> {
-    Queued,
+    Queued { worker_id: usize },
     AllFull(Task<O, E>),
 }
 
@@ -102,7 +110,7 @@ fn dispatch_task_try<O, E>(
         *next_worker = idx + 1;
 
         match task_txs[idx].try_send(task) {
-            Ok(()) => return Ok(DispatchOutcome::Queued),
+            Ok(()) => return Ok(DispatchOutcome::Queued { worker_id: idx }),
             Err(mpsc::TrySendError::Full(t)) => {
                 // keep ownership and try next worker
                 task = t;
@@ -115,30 +123,34 @@ fn dispatch_task_try<O, E>(
     Ok(DispatchOutcome::AllFull(task))
 }
 
-fn release_dependents(
+fn release_dependents<R: ExecObserver>(
     dependents: &[Vec<NodeId>],
     indeg: &mut [usize],
     ready: &mut VecDeque<NodeId>,
     from: NodeId,
+    observer: &mut R,
 ) {
-    for &dst in dependents[from.0].iter() {
+    for &dst in &dependents[from.0] {
         debug_assert!(indeg[dst.0] > 0);
         indeg[dst.0] -= 1;
         if indeg[dst.0] == 0 {
             ready.push_back(dst);
+            observer.mark_ready(dst, ready.len());
         }
     }
 }
 
-pub(crate) fn run<K, O, E>(
+fn run_with_observer<K, O, E, R>(
     dag: &Dag<K, O, E>,
     cfg: &ExecutorConfig,
-    out_keys: Vec<K>,
-) -> Result<HashMap<K, Arc<O>>, ExecError<K, E>>
+    out_keys: &[K],
+    observer: &mut R,
+) -> Result<ExecArtifacts<O>, ExecError<K, E>>
 where
     K: Eq + Hash + Clone,
     O: Send + Sync + 'static,
     E: Send + 'static,
+    R: ExecObserver,
 {
     if out_keys.is_empty() {
         return Err(ExecError::InternalInvariant("outputs must be non-empty"));
@@ -153,7 +165,7 @@ where
         return Err(ExecError::InternalInvariant("worker_queue_cap must be > 0"));
     }
 
-    let needed = mark_needed(dag, &out_keys)?;
+    let needed = mark_needed(dag, out_keys)?;
     let (dependents, mut indeg, needed_count) = build_kahn_metadata(dag, &needed);
 
     // Values indexed by NodeId
@@ -163,7 +175,9 @@ where
     let mut ready: VecDeque<NodeId> = VecDeque::new();
     for (i, is_needed) in needed.iter().enumerate() {
         if *is_needed && indeg[i] == 0 {
-            ready.push_back(NodeId(i));
+            let id = NodeId(i);
+            ready.push_back(id);
+            observer.mark_ready(id, ready.len());
         }
     }
 
@@ -191,10 +205,13 @@ where
         while in_flight < effective_cap {
             // Retry pending first (keeps fairness / avoids rebuilding args).
             if let Some(task) = pending.take() {
+                let task_id = task.id;
+
                 match dispatch_task_try(senders, &mut next_worker, task)
                     .map_err(|_| ExecError::InternalInvariant("worker task channel disconnected"))?
                 {
-                    DispatchOutcome::Queued => {
+                    DispatchOutcome::Queued { worker_id } => {
+                        observer.mark_start(task_id, Some(worker_id));
                         in_flight += 1;
                         continue;
                     }
@@ -211,9 +228,12 @@ where
 
             match &dag.nodes[id.0].kind {
                 NodeKind::Source(v) => {
+                    observer.mark_start(id, None);
                     vals[id.0] = Some(Arc::clone(v));
                     processed += 1;
-                    release_dependents(&dependents, &mut indeg, &mut ready, id);
+                    observer.mark_finish(id);
+
+                    release_dependents(&dependents, &mut indeg, &mut ready, id, observer);
                 }
                 NodeKind::Task(f) => {
                     let deps = &dag.nodes[id.0].deps;
@@ -234,7 +254,8 @@ where
                     match dispatch_task_try(senders, &mut next_worker, task).map_err(|_| {
                         ExecError::InternalInvariant("worker task channel disconnected")
                     })? {
-                        DispatchOutcome::Queued => {
+                        DispatchOutcome::Queued { worker_id } => {
+                            observer.mark_start(id, Some(worker_id));
                             in_flight += 1;
                         }
                         DispatchOutcome::AllFull(task) => {
@@ -264,8 +285,10 @@ where
             .map_err(|_| ExecError::InternalInvariant("result channel disconnected"))?;
         in_flight -= 1;
 
-        // Record and propagate
         let id = task_res.id;
+        observer.mark_finish(id);
+
+        // Record and propagate
         let out = task_res.out.map_err(|e| ExecError::TaskFailed {
             task: dag.nodes[id.0].key.clone(),
             error: e,
@@ -275,8 +298,42 @@ where
         vals[id.0] = Some(Arc::new(out));
         processed += 1;
 
-        release_dependents(&dependents, &mut indeg, &mut ready, id);
+        release_dependents(&dependents, &mut indeg, &mut ready, id, observer);
     }
 
-    collect_outputs(dag, out_keys, vals)
+    Ok((vals, needed))
+}
+
+pub(crate) fn run<K, O, E>(
+    dag: &Dag<K, O, E>,
+    cfg: &ExecutorConfig,
+    out_keys: Vec<K>,
+) -> Result<HashMap<K, Arc<O>>, ExecError<K, E>>
+where
+    K: Eq + Hash + Clone,
+    O: Send + Sync + 'static,
+    E: Send + 'static,
+{
+    let mut observer = NoopObserver::new();
+    let (vals, _) = run_with_observer(dag, cfg, &out_keys, &mut observer)?;
+    collect_outputs(dag, &out_keys, vals)
+}
+
+#[cfg(feature = "execution-trace")]
+pub(crate) fn run_traced<K, O, E>(
+    dag: &Dag<K, O, E>,
+    cfg: &ExecutorConfig,
+    out_keys: Vec<K>,
+) -> Result<TracedExecution<K, O>, ExecError<K, E>>
+where
+    K: Eq + Hash + Clone,
+    O: Send + Sync + 'static,
+    E: Send + 'static,
+{
+    let mut observer = TraceObserver::new(dag.nodes.len());
+    let (vals, needed) = run_with_observer(dag, cfg, &out_keys, &mut observer)?;
+    let outputs = collect_outputs(dag, &out_keys, vals)?;
+    let trace = observer.finalize(dag, &needed);
+
+    Ok(TracedExecution { outputs, trace })
 }

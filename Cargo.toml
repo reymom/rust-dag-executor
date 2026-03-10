@@ -14,6 +14,9 @@ publish = true
 [dev-dependencies]
 criterion = "0.8.2"
 
+[features]
+execution-trace = []
+
 [[bench]]
 name = "exec"
 harness = false

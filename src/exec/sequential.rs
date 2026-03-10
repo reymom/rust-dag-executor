@@ -4,24 +4,34 @@ use std::{
     sync::Arc,
 };
 
-use super::common::{build_kahn_metadata, collect_outputs, mark_needed};
-use crate::error::ExecError;
-use crate::graph::{Dag, NodeId, NodeKind};
+use super::{
+    common::{ExecArtifacts, build_kahn_metadata, collect_outputs, mark_needed},
+    observe::{ExecObserver, NoopObserver},
+};
+use crate::{
+    error::ExecError,
+    graph::{Dag, NodeId, NodeKind},
+};
 
-/// Compute only the requested outputs (and their transitive deps).
-pub(crate) fn run<K, O, E>(
+#[cfg(feature = "execution-trace")]
+use crate::trace::{TraceObserver, TracedExecution};
+
+/// Purpose: execute the needed subgraph once and optionally record scheduler telemetry.
+fn execute<K, O, E, R>(
     dag: &Dag<K, O, E>,
-    out_keys: Vec<K>,
-) -> Result<HashMap<K, Arc<O>>, ExecError<K, E>>
+    out_keys: &[K],
+    observer: &mut R,
+) -> Result<ExecArtifacts<O>, ExecError<K, E>>
 where
     K: Eq + Hash + Clone,
     O: Send + Sync + 'static,
+    R: ExecObserver,
 {
     if out_keys.is_empty() {
         return Err(ExecError::InternalInvariant("outputs must be non-empty"));
     }
 
-    let needed = mark_needed(dag, &out_keys)?;
+    let needed = mark_needed(dag, out_keys)?;
     let (dependents, mut indeg, needed_count) = build_kahn_metadata(dag, &needed);
 
     // Values indexed by NodeId
@@ -31,7 +41,9 @@ where
     // Seed: nodes with indeg=0 in the needed subgraph
     for (i, is_needed) in needed.iter().enumerate() {
         if *is_needed && indeg[i] == 0 {
-            q.push_back(NodeId(i));
+            let id = NodeId(i);
+            q.push_back(id);
+            observer.mark_ready(id, q.len());
         }
     }
 
@@ -39,6 +51,7 @@ where
 
     while let Some(id) = q.pop_front() {
         processed += 1;
+        observer.mark_start(id, None);
 
         // Compute if not source already present
         match &dag.nodes[id.0].kind {
@@ -62,11 +75,14 @@ where
             }
         }
 
+        observer.mark_finish(id);
+
         // Release dependents
-        for &dst in dependents[id.0].iter() {
+        for &dst in &dependents[id.0] {
             indeg[dst.0] -= 1;
             if indeg[dst.0] == 0 {
                 q.push_back(dst);
+                observer.mark_ready(dst, q.len());
             }
         }
     }
@@ -81,5 +97,36 @@ where
         return Err(ExecError::Cycle { remaining });
     }
 
-    collect_outputs(dag, out_keys, vals)
+    Ok((vals, needed))
+}
+
+/// Compute only the requested outputs (and their transitive deps).
+pub(crate) fn run<K, O, E>(
+    dag: &Dag<K, O, E>,
+    out_keys: Vec<K>,
+) -> Result<HashMap<K, Arc<O>>, ExecError<K, E>>
+where
+    K: Eq + Hash + Clone,
+    O: Send + Sync + 'static,
+{
+    let mut observer = NoopObserver::new();
+    let (vals, _) = execute(dag, &out_keys, &mut observer)?;
+    collect_outputs(dag, &out_keys, vals)
+}
+
+#[cfg(feature = "execution-trace")]
+pub(crate) fn run_traced<K, O, E>(
+    dag: &Dag<K, O, E>,
+    out_keys: Vec<K>,
+) -> Result<TracedExecution<K, O>, ExecError<K, E>>
+where
+    K: Eq + Hash + Clone,
+    O: Send + Sync + 'static,
+{
+    let mut observer = TraceObserver::new(dag.nodes.len());
+    let (vals, needed) = execute(dag, &out_keys, &mut observer)?;
+    let outputs = collect_outputs(dag, &out_keys, vals)?;
+    let trace = observer.finalize(dag, &needed);
+
+    Ok(TracedExecution { outputs, trace })
 }
