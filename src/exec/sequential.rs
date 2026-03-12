@@ -109,8 +109,7 @@ where
     K: Eq + Hash + Clone,
     O: Send + Sync + 'static,
 {
-    let mut observer = NoopObserver::new();
-    let (vals, _) = execute(dag, &out_keys, &mut observer)?;
+    let (vals, _) = execute(dag, &out_keys, &mut NoopObserver)?;
     collect_outputs(dag, &out_keys, vals)
 }
 

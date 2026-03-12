@@ -12,10 +12,4 @@ pub(crate) trait ExecObserver {
 /// Purpose: keep the default path free of telemetry overhead.
 pub(crate) struct NoopObserver;
 
-impl NoopObserver {
-    pub(crate) fn new() -> Self {
-        Self
-    }
-}
-
 impl ExecObserver for NoopObserver {}

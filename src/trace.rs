@@ -31,6 +31,7 @@ pub struct NodeTrace<K> {
 }
 
 /// Purpose: summarize one DAG execution in a form suitable for benchmarking and diagnostics.
+#[must_use]
 #[derive(Debug, Clone)]
 pub struct ExecutionTrace<K> {
     pub nodes: Vec<NodeTrace<K>>,
@@ -41,6 +42,7 @@ pub struct ExecutionTrace<K> {
 }
 
 /// Purpose: keep traced runs ergonomic without changing the existing executor API.
+#[must_use]
 #[derive(Debug)]
 pub struct TracedExecution<K, O> {
     pub outputs: HashMap<K, Arc<O>>,
@@ -84,6 +86,9 @@ impl TraceObserver {
         let mut longest_path = vec![Duration::ZERO; dag.nodes.len()];
         let mut critical_path_time = Duration::ZERO;
 
+        // execution_order is populated in mark_start order. Since deps must be
+        // started before their dependents can be scheduled, this is implicitly
+        // topological — the critical-path DP below relies on this invariant.
         for id in self.execution_order {
             if !needed[id.0] {
                 continue;
@@ -151,6 +156,8 @@ impl ExecObserver for TraceObserver {
     }
 
     fn mark_finish(&mut self, id: NodeId) {
-        self.finished_at[id.0] = Some(self.elapsed());
+        if self.finished_at[id.0].is_none() {
+            self.finished_at[id.0] = Some(self.elapsed());
+        }
     }
 }

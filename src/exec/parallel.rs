@@ -140,6 +140,7 @@ fn release_dependents<R: ExecObserver>(
     }
 }
 
+/// Observer is called exclusively from the scheduler thread; workers never touch it.
 fn run_with_observer<K, O, E, R>(
     dag: &Dag<K, O, E>,
     cfg: &ExecutorConfig,
@@ -314,8 +315,7 @@ where
     O: Send + Sync + 'static,
     E: Send + 'static,
 {
-    let mut observer = NoopObserver::new();
-    let (vals, _) = run_with_observer(dag, cfg, &out_keys, &mut observer)?;
+    let (vals, _) = run_with_observer(dag, cfg, &out_keys, &mut NoopObserver)?;
     collect_outputs(dag, &out_keys, vals)
 }
 
